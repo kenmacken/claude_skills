@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLB Turntable Video</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #2f81f7; --accent-hover: #4c93f9; --ok: #3fb950; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  /* Stage / preview */
+  #stage { flex: 1; position: relative; min-width: 0; display: flex; align-items: center; justify-content: center; }
+  /* checkerboard to visualise transparency */
+  #stage::before {
+    content: ""; position: absolute; inset: 0;
+    background-color: #1b2027;
+    background-image:
+      linear-gradient(45deg, #262c36 25%, transparent 25%), linear-gradient(-45deg, #262c36 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #262c36 75%), linear-gradient(-45deg, transparent 75%, #262c36 75%);
+    background-size: 24px 24px; background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+  }
+  #view { position: relative; z-index: 1; max-width: 100%; max-height: 100%; }
+  #drop-hint {
+    position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: var(--muted); pointer-events: none; text-align: center; padding: 20px;
+  }
+  #drop-hint .big { font-size: 18px; color: var(--text); }
+  #stage.dragover::after {
+    content: "Drop .glb to load"; position: absolute; inset: 12px; z-index: 3;
+    border: 2px dashed var(--accent); border-radius: 12px; display: flex; align-items: center;
+    justify-content: center; color: var(--accent); font-size: 18px; background: rgba(47,129,247,0.08);
+  }
+  /* Controls */
+  aside {
+    width: 320px; border-left: 1px solid var(--border); background: var(--panel);
+    padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  select, input[type=number], input[type=text] {
+    background: #0d1117; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; width: 100%;
+  }
+  input[type=color] { width: 100%; height: 36px; padding: 2px; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; }
+  .check { display: flex; align-items: center; gap: 8px; }
+  .check input { width: auto; }
+  button {
+    background: var(--accent); color: white; border: 0; border-radius: 6px;
+    padding: 11px 14px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: #21262d; border: 1px solid var(--border); }
+  button.secondary:hover:not(:disabled) { background: #2a313a; }
+  .btn-file { position: relative; overflow: hidden; }
+  .btn-file input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .progress-wrap { display: none; flex-direction: column; gap: 6px; }
+  .progress-wrap.show { display: flex; }
+  .bar { height: 8px; background: #0d1117; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width .15s; }
+  #status { font-size: 12px; min-height: 16px; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: var(--err); }
+  .divider { border-top: 1px solid var(--border); margin: 2px 0; }
+  .meta { font-size: 11px; color: var(--muted); }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GLB Turntable Video</h1>
+  <span class="sub">Rotating render · transparent WebM</span>
+</header>
+<main>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="drop-hint">
+      <div class="big">Drop a .glb file here</div>
+      <div>or use “Choose file” on the right</div>
+    </div>
+  </div>
+  <aside>
+    <div class="field">
+      <label>Model</label>
+      <button class="secondary btn-file">Choose .glb file…
+        <input type="file" id="file" accept=".glb,model/gltf-binary">
+      </button>
+      <div class="hint" id="model-name">No file loaded</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="field">
+      <label>Duration (seconds)</label>
+      <input type="number" id="duration" value="2" min="0.5" max="30" step="0.5">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Resolution</label>
+        <select id="resolution">
+          <option value="480x480">480 × 480 (square)</option>
+          <option value="720x720" selected>720 × 720 (square)</option>
+          <option value="1080x1080">1080 × 1080 (square)</option>
+          <option value="2048x2048">2048 × 2048 (square)</option>
+          <option value="1280x720">1280 × 720 (16:9)</option>
+          <option value="1920x1080">1920 × 1080 (16:9)</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>FPS</label>
+        <select id="fps">
+          <option value="24">24</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" id="custom-res" style="display:none">
+      <div class="field"><label>Width</label><input type="number" id="cw" value="720" min="16" max="4096" step="2"></div>
+      <div class="field"><label>Height</label><input type="number" id="ch" value="720" min="16" max="4096" step="2"></div>
+    </div>
+
+    <div class="field">
+      <label>Rotation type</label>
+      <select id="rotation-type">
+        <option value="turntable" selected>Turntable — spin (vertical axis)</option>
+        <option value="spherical">Spherical — tumble (all angles)</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Rotations</label>
+        <input type="number" id="turns" value="1" min="0.25" step="0.25">
+      </div>
+      <div class="field">
+        <label>Direction</label>
+        <select id="direction">
+          <option value="1" selected>Clockwise</option>
+          <option value="-1">Counter-clockwise</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Background</label>
+      <div class="check"><input type="checkbox" id="transparent" checked><label for="transparent" style="text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Transparent</label></div>
+      <input type="color" id="bgcolor" value="#1b2027" disabled>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="field">
+      <label>Save to</label>
+      <div class="row">
+        <button class="secondary" id="choose-dir" type="button">Choose folder…</button>
+        <button class="secondary" id="clear-dir" type="button" style="flex:0 0 auto" title="Clear folder">✕</button>
+      </div>
+      <input type="text" id="filename" placeholder="filename.webm">
+      <div class="hint" id="dest-hint">A Save dialog will open after rendering.</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <button id="render" disabled>Render &amp; Save WebM</button>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="bar"><div id="bar"></div></div>
+      <div class="meta" id="progress-label"></div>
+    </div>
+    <div id="status"></div>
+    <div class="meta">Transparent WebM uses VP8 + alpha. Best viewed in a browser, OBS, or an editor that supports alpha WebM.</div>
+  </aside>
+</main>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
