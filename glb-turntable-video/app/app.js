@@ -51,20 +51,25 @@ controls.enablePan = false;
 let pivot = null;          // group holding the centered model
 let modelRadius = 1;       // bounding sphere radius
 const ELEVATION = THREE.MathUtils.degToRad(18);
+// Camera viewing direction (unit, from target to camera). Updated as the user
+// orbits, so resolution changes and the export preserve the chosen angle.
+const viewDir = new THREE.Vector3(0, Math.sin(ELEVATION), Math.cos(ELEVATION)).normalize();
 
 const readTurns = () => { const v = parseFloat($('turns').value); return (isFinite(v) && v > 0) ? v : 1; };
 const readDir = () => +$('direction').value;
 const readType = () => $('rotation-type').value;
 
-// Orient the model for a given loop fraction (0..1).
+// Incremental rotation for a given loop fraction (0..1), relative to identity.
 // turntable: spin about the vertical (Y) axis.
 // spherical: simultaneously spin (Y) and tumble (X) so every angle is shown.
-// Both return to the start orientation when `turns` is a whole number (seamless loop).
-function orient(frac, turns, dir, type) {
-  if (!pivot) return;
+// Returns to identity when `turns` is a whole number (seamless loop).
+const _AXIS_Y = new THREE.Vector3(0, 1, 0);
+const _AXIS_X = new THREE.Vector3(1, 0, 0);
+function motionQuat(frac, turns, dir, type) {
   const a = dir * turns * Math.PI * 2 * frac;
-  if (type === 'spherical') pivot.rotation.set(a, a, 0);
-  else pivot.rotation.set(0, a, 0);
+  const q = new THREE.Quaternion().setFromAxisAngle(_AXIS_Y, a);
+  if (type === 'spherical') q.multiply(new THREE.Quaternion().setFromAxisAngle(_AXIS_X, a));
+  return q;
 }
 
 function currentResolution() {
@@ -78,15 +83,18 @@ function currentResolution() {
 }
 
 function frameCamera() {
+  // Preserve the user's current orbit direction; only refit the distance.
+  const d = camera.position.clone().sub(controls.target);
+  if (d.lengthSq() > 1e-6) viewDir.copy(d).normalize();
   const aspect = camera.aspect;
   const vFov = THREE.MathUtils.degToRad(camera.fov);
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
   const dist = Math.max(modelRadius / Math.sin(vFov / 2), modelRadius / Math.sin(hFov / 2)) * 1.3;
-  camera.position.set(0, dist * Math.sin(ELEVATION), dist * Math.cos(ELEVATION));
+  controls.target.set(0, 0, 0);
+  camera.position.copy(controls.target).addScaledVector(viewDir, dist);
   camera.near = Math.max(0.001, dist - modelRadius * 2);
   camera.far = dist + modelRadius * 4;
   camera.updateProjectionMatrix();
-  controls.target.set(0, 0, 0);
   controls.update();
 }
 
@@ -105,14 +113,15 @@ function setPreviewSize() {
 
 // ---------- Preview loop ----------
 let exporting = false;
-let autoRotate = true;
 let previewPhase = 0;
+// Grabbing the model to orbit pauses auto-spin so you can set a start angle.
+controls.addEventListener('start', () => { $('autospin').checked = false; });
 function animate() {
   requestAnimationFrame(animate);
   if (exporting) return;
-  if (pivot && autoRotate) {
+  if (pivot && $('autospin').checked) {
     previewPhase = (previewPhase + 0.003) % 1;
-    orient(previewPhase, 1, readDir(), readType()); // one normalized cycle, showcases the motion
+    pivot.quaternion.copy(motionQuat(previewPhase, 1, readDir(), readType()));
   }
   controls.update();
   applyBackground();
@@ -147,6 +156,7 @@ function loadGLB(arrayBuffer, name) {
     pivot = new THREE.Group();
     pivot.add(model);
     scene.add(pivot);
+    previewPhase = 0;
     setPreviewSize();
     dropHint.style.display = 'none';
     $('model-name').textContent = name;
@@ -291,6 +301,8 @@ async function exportVideo() {
   exporting = true;
   renderBtn.disabled = true;
   controls.enabled = false;
+  // Start the rotation from exactly the orientation shown in the viewer.
+  const startQuat = pivot.quaternion.clone();
 
   try {
     const { w: W, h: H } = currentResolution();
@@ -314,7 +326,7 @@ async function exportVideo() {
 
     const pad = (n) => String(n).padStart(4, '0');
     for (let i = 0; i < total; i++) {
-      orient(i / total, turns, dir, type);
+      pivot.quaternion.copy(motionQuat(i / total, turns, dir, type)).multiply(startQuat);
       renderer.render(scene, camera);
       const u8 = dataURLtoU8(canvas.toDataURL('image/png'));
       await ff.writeFile('f' + pad(i) + '.png', u8);
@@ -352,6 +364,7 @@ async function exportVideo() {
     console.error(e);
     setStatus('Render failed: ' + (e?.message || e), 'err');
   } finally {
+    pivot.quaternion.copy(startQuat); // restore the orientation shown before export
     exporting = false;
     controls.enabled = true;
     renderBtn.disabled = false;
@@ -361,6 +374,9 @@ async function exportVideo() {
 }
 
 renderBtn.addEventListener('click', exportVideo);
+
+// Debug/automation hook (harmless): inspect the live scene objects.
+window.__debug = { get camera() { return camera; }, get controls() { return controls; }, get pivot() { return pivot; } };
 
 setPreviewSize();
 setStatus('Drop a .glb file to begin');
